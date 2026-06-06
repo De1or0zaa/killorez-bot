@@ -70,22 +70,15 @@ class EventSelect(discord.ui.Select):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # Send DM to user requesting evidence
+        # Send DM to user requesting evidence — ОДНО сообщение
         try:
             dm_embed = create_embed(
                 "Отчет",
-                f"Отправьте доказательства присутствия на **{event['name']}** в ответ на это сообщение.",
+                f"Отправьте доказательства присутствия на **{event['name']}** в ответ на это сообщение.\n\n"
+                "Прикрепите доказательства (скриншот/видео/ссылку с мероприятия), ответив на это сообщение от бота.",
                 EMBED_PURPLE
             )
             await interaction.user.send(embed=dm_embed)
-
-            evidence_embed = create_embed(
-                "Ваш отчет будет отправлен",
-                "Прикрепите доказательства. Для того чтобы отправить доказательства, "
-                "отправьте скриншот/видео/ссылку с мероприятия, вам нужно ответить на это сообщение от бота, прикрепив док-ва.",
-                EMBED_GREEN
-            )
-            await interaction.user.send(embed=evidence_embed)
         except discord.Forbidden:
             embed = create_error_embed("Ошибка", "Я не могу отправить вам ЛС! Откройте личные сообщения.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -623,14 +616,23 @@ class AllCommandsCog(commands.Cog, name="AllCommands"):
             if evidence_content:
                 desc += f"\n**Текст:** {evidence_content}"
 
+            # Добавляем ссылки на вложения в текст embed-а
+            if attachments:
+                att_links = []
+                for att in attachments:
+                    att_links.append(f"[{att.filename}]({att.url})")
+                desc += f"\n**Вложения:** {', '.join(att_links)}"
+
             evidence_embed = create_embed("Новый отчет!", desc, EMBED_PURPLE)
 
+            # Скачиваем и пересылаем файлы
             files = []
             for att in attachments:
                 try:
-                    file = await att.to_file()
+                    file = await att.to_file(use_cached=True)
                     files.append(file)
                 except Exception:
+                    # Если не удалось скачать — URL уже добавлен в embed выше
                     pass
 
             view = ApproveRejectView(
