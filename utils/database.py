@@ -110,7 +110,7 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS warning_settings (
             guild_id INTEGER PRIMARY KEY,
             warn_roles TEXT DEFAULT '[]',
-            admin_role_id INTEGER DEFAULT NULL
+            admin_roles TEXT DEFAULT '[]'
         )
     ''')
     

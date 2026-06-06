@@ -103,15 +103,17 @@ class WarningsCog(commands.Cog, name="Warnings"):
     @warning.command(name="add", description="Выдать штраф участнику")
     @app_commands.describe(member="Участник", reason="Причина")
     async def warning_add(self, interaction: discord.Interaction, member: discord.Member, reason: str = ""):
-        # Проверка роли админа
+        # Проверка ролей админа
         settings = await fetch_one(
             "SELECT * FROM warning_settings WHERE guild_id = ?",
             (interaction.guild.id,)
         )
-        if settings and settings['admin_role_id']:
-            admin_role = interaction.guild.get_role(settings['admin_role_id'])
-            if admin_role and admin_role not in interaction.user.roles:
-                embed = create_error_embed("Ошибка", f"У вас нет роли {admin_role.mention} для выдачи штрафов!")
+        if settings and settings['admin_roles']:
+            admin_role_ids = json_to_list(settings['admin_roles'])
+            has_admin = any(interaction.guild.get_role(rid) in interaction.user.roles for rid in admin_role_ids)
+            if not has_admin:
+                admin_roles_mentions = ", ".join([f"<@&{rid}>" for rid in admin_role_ids])
+                embed = create_error_embed("Ошибка", f"У вас нет нужной роли для выдачи штрафов!\nТребуются: {admin_roles_mentions}")
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
@@ -212,25 +214,27 @@ class WarningsCog(commands.Cog, name="Warnings"):
         embed = create_success_embed("Роли штрафа обновлены", f"Роли: {role_mentions}")
         await interaction.response.send_message(embed=embed)
 
-    @warning.command(name="admin", description="Выбрать роль админа для штрафов")
-    @app_commands.describe(role="Роль админа")
-    async def warning_set_admin(self, interaction: discord.Interaction, role: discord.Role):
+    @warning.command(name="admin", description="Выбрать роли админов для штрафов")
+    @app_commands.describe(roles="ID ролей через запятую")
+    async def warning_set_admin(self, interaction: discord.Interaction, roles: str):
+        role_ids = [int(r.strip()) for r in roles.split(",") if r.strip().isdigit()]
         settings = await fetch_one(
             "SELECT * FROM warning_settings WHERE guild_id = ?",
             (interaction.guild.id,)
         )
         if settings:
             await execute_query(
-                "UPDATE warning_settings SET admin_role_id = ? WHERE guild_id = ?",
-                (role.id, interaction.guild.id)
+                "UPDATE warning_settings SET admin_roles = ? WHERE guild_id = ?",
+                (list_to_json(role_ids), interaction.guild.id)
             )
         else:
             await execute_query(
-                "INSERT INTO warning_settings (guild_id, admin_role_id) VALUES (?, ?)",
-                (interaction.guild.id, role.id)
+                "INSERT INTO warning_settings (guild_id, admin_roles) VALUES (?, ?)",
+                (interaction.guild.id, list_to_json(role_ids))
             )
 
-        embed = create_success_embed("Роль админа обновлена", f"Роль: {role.mention}")
+        role_mentions = ", ".join([f"<@&{r}>" for r in role_ids])
+        embed = create_success_embed("Роли админов обновлены", f"Роли: {role_mentions}")
         await interaction.response.send_message(embed=embed)
 
     @warning.command(name="list", description="Список всех оштрафованных")
