@@ -7,6 +7,77 @@ from utils.embeds import create_embed, create_success_embed, create_error_embed,
 WATERMARK = "KILLOREZ HELPER"
 
 
+# ==================== UI: ОДОБРИТЬ / ОТКЛОНИТЬ ЗАКАЗ ====================
+
+class OrderApproveRejectView(discord.ui.View):
+    def __init__(self, user_id, guild_id, product_id, product_name, price):
+        super().__init__(timeout=None)
+        self.user_id = user_id
+        self.guild_id = guild_id
+        self.product_id = product_id
+        self.product_name = product_name
+        self.price = price
+
+    @discord.ui.button(label="Одобрить", style=discord.ButtonStyle.green, emoji="✅")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Списываем очки
+        points_row = await fetch_one(
+            "SELECT * FROM points WHERE user_id = ? AND guild_id = ?",
+            (self.user_id, self.guild_id)
+        )
+        user_points = points_row['amount'] if points_row else 0
+
+        if user_points < self.price:
+            embed = create_error_embed("Недостаточно очков",
+                f"У {f'<@{self.user_id}>'} **{user_points}** очков, а товар стоит **{self.price}** очков! Заказ невозможно выполнить.")
+            await interaction.response.edit_message(embed=embed, view=None)
+            return
+
+        new_amount = user_points - self.price
+        if new_amount <= 0:
+            await execute_query(
+                "DELETE FROM points WHERE user_id = ? AND guild_id = ?",
+                (self.user_id, self.guild_id)
+            )
+        else:
+            await execute_query(
+                "UPDATE points SET amount = ? WHERE user_id = ? AND guild_id = ?",
+                (new_amount, self.user_id, self.guild_id)
+            )
+
+        user = interaction.client.get_user(self.user_id)
+
+        embed = create_success_embed("Заказ одобрен",
+            f"Заказ **{self.product_name}** от {user.mention if user else f'<@{self.user_id}>'} одобрен {interaction.user.mention}!\n"
+            f"Списано **{self.price}** очков. Остаток у заказчика: **{new_amount}** очков")
+        await interaction.response.edit_message(embed=embed, view=None)
+
+        try:
+            dm_embed = create_success_embed("Заказ одобрен!",
+                f"Ваш заказ **{self.product_name}** одобрен!\nСписано **{self.price}** очков. Остаток: **{new_amount}** очков")
+            if user:
+                await user.send(embed=dm_embed)
+        except discord.Forbidden:
+            pass
+
+    @discord.ui.button(label="Отклонить", style=discord.ButtonStyle.red, emoji="❌")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user = interaction.client.get_user(self.user_id)
+
+        embed = create_embed("Заказ отклонен",
+            f"Заказ **{self.product_name}** от {user.mention if user else f'<@{self.user_id}>'} отклонен {interaction.user.mention}.\nОчки не списаны.",
+            EMBED_RED)
+        await interaction.response.edit_message(embed=embed, view=None)
+
+        try:
+            dm_embed = create_embed("Заказ отклонен",
+                f"Ваш заказ **{self.product_name}** был отклонен. Очки не списаны.", EMBED_RED)
+            if user:
+                await user.send(embed=dm_embed)
+        except discord.Forbidden:
+            pass
+
+
 # ==================== UI: МАГАЗИН ====================
 
 class MarketSelect(discord.ui.Select):
@@ -44,35 +115,46 @@ class MarketSelect(discord.ui.Select):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        new_amount = user_points - product['price']
-        if new_amount <= 0:
-            await execute_query(
-                "DELETE FROM points WHERE user_id = ? AND guild_id = ?",
-                (interaction.user.id, self.guild_id)
-            )
-        else:
-            await execute_query(
-                "UPDATE points SET amount = ? WHERE user_id = ? AND guild_id = ?",
-                (new_amount, interaction.user.id, self.guild_id)
-            )
-
-        # Лог покупки
+        # НЕ списываем очки сразу — отправляем заказ в логи на рассмотрение
         settings = await fetch_one(
             "SELECT * FROM market_settings WHERE guild_id = ?",
             (self.guild_id,)
         )
-        if settings and settings['log_channel_id']:
-            log_channel = interaction.guild.get_channel(settings['log_channel_id'])
-            if log_channel:
-                log_embed = create_embed("Заказ выполнен!",
-                    f"**Товар:** {product['name']}\n**Заказчик:** {interaction.user.mention}\n**Исполнитель:** будет назначен\n**Цена:** {product['price']} очков",
-                    EMBED_PURPLE)
-                log_embed.set_footer(text=WATERMARK)
-                await log_channel.send(embed=log_embed)
+        if not settings or not settings['log_channel_id']:
+            embed = create_error_embed("Ошибка", "Канал логов магазина не настроен! Используйте `/market log_channel`")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
 
-        embed = create_success_embed("Покупка совершена!",
-            f"Вы купили **{product['name']}** за **{product['price']}** очков!\nОстаток: **{new_amount}** очков")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        log_channel = interaction.guild.get_channel(settings['log_channel_id'])
+        if not log_channel:
+            embed = create_error_embed("Ошибка", "Канал логов не найден!")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Отправляем заказ в канал логов с кнопками
+        order_embed = create_embed("Новый заказ!",
+            f"**Товар:** {product['name']}\n"
+            f"**Заказчик:** {interaction.user.mention}\n"
+            f"**Цена:** {product['price']} очков\n"
+            f"**Баланс заказчика:** {user_points} очков",
+            EMBED_PURPLE)
+        if product['description']:
+            order_embed.add_field(name="Описание товара", value=product['description'], inline=False)
+
+        view = OrderApproveRejectView(
+            user_id=interaction.user.id,
+            guild_id=self.guild_id,
+            product_id=product['product_id'],
+            product_name=product['name'],
+            price=product['price']
+        )
+
+        await log_channel.send(embed=order_embed, view=view)
+
+        confirm_embed = create_success_embed("Заказ отправлен",
+            f"Ваш заказ на **{product['name']}** за **{product['price']}** очков отправлен на рассмотрение модераторам!\n"
+            f"Очки будут списаны после одобрения заказа.")
+        await interaction.response.send_message(embed=confirm_embed, ephemeral=True)
 
 
 class MarketShopView(discord.ui.View):
