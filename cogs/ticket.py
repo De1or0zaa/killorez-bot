@@ -164,6 +164,50 @@ class TicketButtonView(discord.ui.View):
         await interaction.response.send_modal(modal)
 
 
+# ==================== ВЫБОР КАНАЛА ОБЗВОНА ====================
+
+class CallChannelSelectView(discord.ui.View):
+    def __init__(self, guild_id, target_user_id, call_channel_ids):
+        super().__init__(timeout=60)
+        self.add_item(CallChannelSelect(guild_id, target_user_id, call_channel_ids))
+
+
+class CallChannelSelect(discord.ui.Select):
+    def __init__(self, guild_id, target_user_id, call_channel_ids):
+        options = []
+        for ch_id in call_channel_ids:
+            options.append(discord.SelectOption(
+                label=f"Канал {ch_id}",
+                value=str(ch_id),
+                description=f"ID: {ch_id}"
+            ))
+        super().__init__(
+            placeholder="Выберите голосовой канал для обзвона",
+            options=options,
+            min_values=1,
+            max_values=1
+        )
+        self.guild_id = guild_id
+        self.target_user_id = target_user_id
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_channel_id = int(self.values[0])
+        settings = await ensure_ticket_settings(self.guild_id)
+        call_msg = settings['call_message'] or "Обзвон начат! Переходите в голосовой канал."
+
+        user = interaction.guild.get_member(self.target_user_id)
+        user_mention = user.mention if user else f"<@{self.target_user_id}>"
+
+        embed = create_embed("Обзвон",
+            f"{call_msg}\n\nГолосовой канал: <#{selected_channel_id}>", EMBED_PURPLE)
+        embed.add_field(name="Участник", value=user_mention, inline=True)
+        embed.add_field(name="Вызвал", value=interaction.user.mention, inline=True)
+
+        # Отправляем в тикет-канал (не ephemeral), чтобы участник увидел
+        await interaction.channel.send(content=user_mention, embed=embed)
+        await interaction.response.edit_message(content=None, view=None, embed=None)
+
+
 # ==================== ДЕЙСТВИЯ В ТИКЕТЕ ====================
 
 class TicketActionView(discord.ui.View):
@@ -229,7 +273,6 @@ class TicketActionView(discord.ui.View):
         settings = await ensure_ticket_settings(self.guild_id)
 
         call_channels = json_to_list(settings['call_channels'])
-        call_msg = settings['call_message'] or "Обзвон начат! Переходите в голосовой канал."
 
         ticket = await fetch_one("SELECT * FROM tickets WHERE channel_id = ?", (interaction.channel.id,))
         if not ticket:
@@ -248,12 +291,11 @@ class TicketActionView(discord.ui.View):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        channel_mentions = " ".join([f"<#{c}>" for c in call_channels])
+        # Показываем выпадающий список с голосовыми каналами
         embed = create_embed("Обзвон",
-            f"{call_msg}\n\nГолосовые каналы: {channel_mentions}", EMBED_PURPLE)
-        embed.add_field(name="Участник", value=user.mention, inline=True)
-
-        await interaction.response.send_message(content=user.mention, embed=embed)
+            f"Выберите голосовой канал, куда вызвать {user.mention}", EMBED_PURPLE)
+        view = CallChannelSelectView(self.guild_id, user.id, call_channels)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(label="Отклонить", style=discord.ButtonStyle.red, emoji="❌")
     async def reject_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
