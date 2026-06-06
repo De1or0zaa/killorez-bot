@@ -265,10 +265,12 @@ class MarketButtonView(discord.ui.View):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        if settings['role_id']:
-            role = interaction.guild.get_role(settings['role_id'])
-            if role and role not in interaction.user.roles:
-                embed = create_error_embed("Ошибка", f"У вас нет роли {role.mention} для доступа к магазину!")
+        if settings['roles']:
+            market_role_ids = json_to_list(settings['roles'])
+            has_role = any(interaction.guild.get_role(rid) in interaction.user.roles for rid in market_role_ids)
+            if not has_role:
+                role_mentions = ", ".join([f"<@&{rid}>" for rid in market_role_ids])
+                embed = create_error_embed("Ошибка", f"У вас нет нужной роли для доступа к магазину!\nТребуются: {role_mentions}")
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
@@ -427,44 +429,48 @@ class AllCommandsCog(commands.Cog, name="AllCommands"):
         await interaction.response.send_message(embed=embed)
 
     # --- Market Roles ---
-    @set_group.command(name="role_market", description="Изменить роль для доступа к магазину")
-    @app_commands.describe(role="Роль")
-    async def set_role_market(self, interaction: discord.Interaction, role: discord.Role):
+    @set_group.command(name="role_market", description="Изменить роли для доступа к магазину")
+    @app_commands.describe(roles="ID ролей через запятую")
+    async def set_role_market(self, interaction: discord.Interaction, roles: str):
+        role_ids = [int(r.strip()) for r in roles.split(",") if r.strip().isdigit()]
         settings = await fetch_one(
             "SELECT * FROM market_settings WHERE guild_id = ?",
             (interaction.guild.id,)
         )
         if settings:
             await execute_query(
-                "UPDATE market_settings SET role_id = ? WHERE guild_id = ?",
-                (role.id, interaction.guild.id)
+                "UPDATE market_settings SET roles = ? WHERE guild_id = ?",
+                (list_to_json(role_ids), interaction.guild.id)
             )
         else:
             await execute_query(
-                "INSERT INTO market_settings (guild_id, role_id) VALUES (?, ?)",
-                (interaction.guild.id, role.id)
+                "INSERT INTO market_settings (guild_id, roles) VALUES (?, ?)",
+                (interaction.guild.id, list_to_json(role_ids))
             )
-        embed = create_success_embed("Роль магазина обновлена", f"Роль: {role.mention}")
+        role_mentions = ", ".join([f"<@&{r}>" for r in role_ids])
+        embed = create_success_embed("Роли магазина обновлены", f"Роли: {role_mentions}")
         await interaction.response.send_message(embed=embed)
 
-    @set_group.command(name="role_market_admin", description="Изменить админ роль магазина")
-    @app_commands.describe(role="Роль админа")
-    async def set_role_market_admin(self, interaction: discord.Interaction, role: discord.Role):
+    @set_group.command(name="role_market_admin", description="Изменить админ роли магазина")
+    @app_commands.describe(roles="ID ролей через запятую")
+    async def set_role_market_admin(self, interaction: discord.Interaction, roles: str):
+        role_ids = [int(r.strip()) for r in roles.split(",") if r.strip().isdigit()]
         settings = await fetch_one(
             "SELECT * FROM market_settings WHERE guild_id = ?",
             (interaction.guild.id,)
         )
         if settings:
             await execute_query(
-                "UPDATE market_settings SET admin_role_id = ? WHERE guild_id = ?",
-                (role.id, interaction.guild.id)
+                "UPDATE market_settings SET admin_roles = ? WHERE guild_id = ?",
+                (list_to_json(role_ids), interaction.guild.id)
             )
         else:
             await execute_query(
-                "INSERT INTO market_settings (guild_id, admin_role_id) VALUES (?, ?)",
-                (interaction.guild.id, role.id)
+                "INSERT INTO market_settings (guild_id, admin_roles) VALUES (?, ?)",
+                (interaction.guild.id, list_to_json(role_ids))
             )
-        embed = create_success_embed("Роль админа магазина обновлена", f"Роль: {role.mention}")
+        role_mentions = ", ".join([f"<@&{r}>" for r in role_ids])
+        embed = create_success_embed("Роли админов магазина обновлены", f"Роли: {role_mentions}")
         await interaction.response.send_message(embed=embed)
 
     # ==================== CREATE GROUP ====================

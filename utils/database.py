@@ -89,7 +89,7 @@ async def init_db():
             guild_id INTEGER PRIMARY KEY,
             reset_time INTEGER DEFAULT 3600,
             activity_mode TEXT DEFAULT 'voice',
-            required_role_id INTEGER DEFAULT NULL
+            required_roles TEXT DEFAULT '[]'
         )
     ''')
     
@@ -129,8 +129,8 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS market_settings (
             guild_id INTEGER PRIMARY KEY,
             log_channel_id INTEGER DEFAULT NULL,
-            role_id INTEGER DEFAULT NULL,
-            admin_role_id INTEGER DEFAULT NULL,
+            roles TEXT DEFAULT '[]',
+            admin_roles TEXT DEFAULT '[]',
             welcome_message TEXT DEFAULT 'В данном магазине вы можете обменять свои очки на товары.',
             exchange_rate INTEGER DEFAULT 2500,
             exchange_enabled INTEGER DEFAULT 1

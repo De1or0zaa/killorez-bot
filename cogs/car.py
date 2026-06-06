@@ -2,7 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from utils.database import fetch_one, fetch_all, execute_query
-from utils.embeds import create_embed, create_success_embed, create_error_embed, EMBED_GREEN, EMBED_RED, EMBED_PURPLE
+from utils.embeds import create_embed, create_success_embed, create_error_embed, json_to_list, list_to_json, EMBED_GREEN, EMBED_RED, EMBED_PURPLE
 import time
 
 WATERMARK = "KILLOREZ HELPER"
@@ -88,25 +88,27 @@ class CarCog(commands.Cog, name="Car"):
         embed = create_success_embed("Режим обновлен", f"Режим активности: **{mode_text}**")
         await interaction.response.send_message(embed=embed)
 
-    @car.command(name="set", description="Изменить роль для доступа к машине")
-    @app_commands.describe(role="Роль")
-    async def car_set_role(self, interaction: discord.Interaction, role: discord.Role):
+    @car.command(name="set", description="Изменить роли для доступа к машине")
+    @app_commands.describe(roles="ID ролей через запятую")
+    async def car_set_role(self, interaction: discord.Interaction, roles: str):
+        role_ids = [int(r.strip()) for r in roles.split(",") if r.strip().isdigit()]
         settings = await fetch_one(
             "SELECT * FROM car_settings WHERE guild_id = ?",
             (interaction.guild.id,)
         )
         if settings:
             await execute_query(
-                "UPDATE car_settings SET required_role_id = ? WHERE guild_id = ?",
-                (role.id, interaction.guild.id)
+                "UPDATE car_settings SET required_roles = ? WHERE guild_id = ?",
+                (list_to_json(role_ids), interaction.guild.id)
             )
         else:
             await execute_query(
-                "INSERT INTO car_settings (guild_id, required_role_id) VALUES (?, ?)",
-                (interaction.guild.id, role.id)
+                "INSERT INTO car_settings (guild_id, required_roles) VALUES (?, ?)",
+                (interaction.guild.id, list_to_json(role_ids))
             )
 
-        embed = create_success_embed("Роль обновлена", f"Роль для доступа к машине: {role.mention}")
+        role_mentions = ", ".join([f"<@&{r}>" for r in role_ids])
+        embed = create_success_embed("Роли обновлены", f"Роли для доступа к машине: {role_mentions}")
         await interaction.response.send_message(embed=embed)
 
     @car.command(name="take", description="Взять машину из автопарка")
@@ -131,10 +133,12 @@ class CarCog(commands.Cog, name="Car"):
             "SELECT * FROM car_settings WHERE guild_id = ?",
             (interaction.guild.id,)
         )
-        if settings and settings['required_role_id']:
-            role = interaction.guild.get_role(settings['required_role_id'])
-            if role and role not in interaction.user.roles:
-                embed = create_error_embed("Ошибка", f"У вас нет роли {role.mention} для использования машины!")
+        if settings and settings['required_roles']:
+            required_role_ids = json_to_list(settings['required_roles'])
+            has_role = any(interaction.guild.get_role(rid) in interaction.user.roles for rid in required_role_ids)
+            if not has_role:
+                role_mentions = ", ".join([f"<@&{rid}>" for rid in required_role_ids])
+                embed = create_error_embed("Ошибка", f"У вас нет нужной роли для использования машины!\nТребуются: {role_mentions}")
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
