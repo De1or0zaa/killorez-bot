@@ -22,7 +22,7 @@ async def on_ready():
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="KILLOREZ HELPER"))
     
     # Load cogs
-    cogs_to_load = ['afk', 'ticket', 'car', 'warnings', 'commands']
+    cogs_to_load = ['afk', 'ticket', 'car', 'warnings', 'points', 'market', 'commands']
     for cog_name in cogs_to_load:
         try:
             await bot.load_extension(f'cogs.{cog_name}')
