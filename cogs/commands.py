@@ -427,44 +427,45 @@ class AllCommandsCog(commands.Cog, name="AllCommands"):
         await interaction.response.send_message(embed=embed)
 
     # --- Market Roles ---
-    @set_group.command(name="role_market", description="Настроить роли магазина")
-    @app_commands.describe(action="market или market_admin", role="Роль")
-    async def set_role_market(self, interaction: discord.Interaction, action: str, role: discord.Role):
+    @set_group.command(name="role_market", description="Изменить роль для доступа к магазину")
+    @app_commands.describe(role="Роль")
+    async def set_role_market(self, interaction: discord.Interaction, role: discord.Role):
         settings = await fetch_one(
             "SELECT * FROM market_settings WHERE guild_id = ?",
             (interaction.guild.id,)
         )
-
-        if action == "market":
-            if settings:
-                await execute_query(
-                    "UPDATE market_settings SET role_id = ? WHERE guild_id = ?",
-                    (role.id, interaction.guild.id)
-                )
-            else:
-                await execute_query(
-                    "INSERT INTO market_settings (guild_id, role_id) VALUES (?, ?)",
-                    (interaction.guild.id, role.id)
-                )
-            embed = create_success_embed("Роль магазина обновлена", f"Роль: {role.mention}")
-            await interaction.response.send_message(embed=embed)
-
-        elif action == "market_admin":
-            if settings:
-                await execute_query(
-                    "UPDATE market_settings SET admin_role_id = ? WHERE guild_id = ?",
-                    (role.id, interaction.guild.id)
-                )
-            else:
-                await execute_query(
-                    "INSERT INTO market_settings (guild_id, admin_role_id) VALUES (?, ?)",
-                    (interaction.guild.id, role.id)
-                )
-            embed = create_success_embed("Роль админа магазина обновлена", f"Роль: {role.mention}")
-            await interaction.response.send_message(embed=embed)
+        if settings:
+            await execute_query(
+                "UPDATE market_settings SET role_id = ? WHERE guild_id = ?",
+                (role.id, interaction.guild.id)
+            )
         else:
-            embed = create_error_embed("Ошибка", "Используйте: market или market_admin")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await execute_query(
+                "INSERT INTO market_settings (guild_id, role_id) VALUES (?, ?)",
+                (interaction.guild.id, role.id)
+            )
+        embed = create_success_embed("Роль магазина обновлена", f"Роль: {role.mention}")
+        await interaction.response.send_message(embed=embed)
+
+    @set_group.command(name="role_market_admin", description="Изменить админ роль магазина")
+    @app_commands.describe(role="Роль админа")
+    async def set_role_market_admin(self, interaction: discord.Interaction, role: discord.Role):
+        settings = await fetch_one(
+            "SELECT * FROM market_settings WHERE guild_id = ?",
+            (interaction.guild.id,)
+        )
+        if settings:
+            await execute_query(
+                "UPDATE market_settings SET admin_role_id = ? WHERE guild_id = ?",
+                (role.id, interaction.guild.id)
+            )
+        else:
+            await execute_query(
+                "INSERT INTO market_settings (guild_id, admin_role_id) VALUES (?, ?)",
+                (interaction.guild.id, role.id)
+            )
+        embed = create_success_embed("Роль админа магазина обновлена", f"Роль: {role.mention}")
+        await interaction.response.send_message(embed=embed)
 
     # ==================== CREATE GROUP ====================
     create_group = app_commands.Group(name="create", description="Создание элементов")
