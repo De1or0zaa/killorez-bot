@@ -29,12 +29,12 @@ class PointsReportView(discord.ui.View):
             "Выберите мероприятие в выпадающем списке ниже, за которое вы хотели бы получить очки!",
             EMBED_PURPLE)
         view = discord.ui.View(timeout=120)
-        view.add_item(EventSelect(events))
+        view.add_item(EventSelect(events, interaction.guild.id))
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 class EventSelect(discord.ui.Select):
-    def __init__(self, events):
+    def __init__(self, events, guild_id):
         options = []
         for e in events:
             options.append(discord.SelectOption(
@@ -44,6 +44,7 @@ class EventSelect(discord.ui.Select):
             ))
         super().__init__(placeholder="Выберите мероприятие", options=options)
         self.events = events
+        self.guild_id = guild_id
 
     async def callback(self, interaction: discord.Interaction):
         event_id = int(self.values[0])
@@ -56,73 +57,36 @@ class EventSelect(discord.ui.Select):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        modal = EvidenceModal(event, interaction.guild.id)
-        await interaction.response.send_modal(modal)
+        # Сохраняем информацию о ожидании доказательств
+        cog = interaction.client.get_cog('Points')
+        if cog:
+            cog.pending_evidence[interaction.user.id] = {
+                'event_id': event['event_id'],
+                'event_name': event['name'],
+                'points': event['points'],
+                'guild_id': self.guild_id
+            }
 
+        # Отправляем DM с просьбой прислать доказательства
+        try:
+            dm_embed = create_embed("Доказательства",
+                f"Вы выбрали мероприятие: **{event['name']}** ({event['points']} очков)\n\n"
+                f"Пожалуйста, **ответьте на это сообщение** с доказательствами вашего участия!\n\n"
+                f"Вы можете прикрепить скриншоты, видео или написать текст.",
+                EMBED_PURPLE)
+            dm_embed.set_footer(text=WATERMARK)
+            await interaction.user.send(embed=dm_embed)
 
-# ==================== UI: МОДАЛ ДОКАЗАТЕЛЬСТВ ====================
-
-class EvidenceModal(discord.ui.Modal, title="Отчет на баллы"):
-    description_input = discord.ui.TextInput(
-        label="Описание",
-        style=discord.TextStyle.paragraph,
-        placeholder="Опишите ваше участие в мероприятии",
-        required=True,
-        max_length=500
-    )
-    evidence_input = discord.ui.TextInput(
-        label="Доказательства (ссылки на скриншоты/видео)",
-        style=discord.TextStyle.paragraph,
-        placeholder="Вставьте ссылку на скриншот или видео с мероприятия\nНапример: https://cdn.discordapp.com/...",
-        required=False,
-        max_length=1000
-    )
-
-    def __init__(self, event, guild_id):
-        super().__init__()
-        self.event = event
-        self.guild_id = guild_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        settings = await fetch_one(
-            "SELECT * FROM point_settings WHERE guild_id = ?",
-            (self.guild_id,)
-        )
-        if not settings or not settings['log_channel_id']:
-            embed = create_error_embed("Ошибка", "Канал логов для отчетов не настроен! Используйте `/points log_channel`")
+            confirm_embed = create_success_embed("Проверьте ЛС",
+                f"Я отправил вам сообщение в ЛС! Ответьте на него с доказательствами участия в **{event['name']}**.")
+            await interaction.response.send_message(embed=confirm_embed, ephemeral=True)
+        except discord.Forbidden:
+            # Если ЛС закрыто — откатываем
+            cog = interaction.client.get_cog('Points')
+            if cog and interaction.user.id in cog.pending_evidence:
+                del cog.pending_evidence[interaction.user.id]
+            embed = create_error_embed("Ошибка", "У вас закрыты ЛС! Откройте личные сообщения, чтобы отправить доказательства.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        log_channel = interaction.guild.get_channel(settings['log_channel_id'])
-        if not log_channel:
-            embed = create_error_embed("Ошибка", "Канал логов не найден!")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        desc = f"**От:** {interaction.user.mention}\n"
-        desc += f"**Мероприятие:** {self.event['name']}\n"
-        desc += f"**Очки:** {self.event['points']}\n"
-        desc += f"**Описание:** {self.description_input.value}"
-
-        evidence_text = self.evidence_input.value.strip() if self.evidence_input.value else ""
-        if evidence_text:
-            desc += f"\n**Доказательства:** {evidence_text}"
-
-        evidence_embed = create_embed("Новый отчет!", desc, EMBED_PURPLE)
-
-        view = ApproveRejectView(
-            user_id=interaction.user.id,
-            guild_id=self.guild_id,
-            event_id=self.event['event_id'],
-            event_name=self.event['name'],
-            points=self.event['points']
-        )
-
-        await log_channel.send(embed=evidence_embed, view=view)
-
-        confirm_embed = create_success_embed("Отчет отправлен",
-            f"Ваш отчет за **{self.event['name']}** отправлен на проверку модераторам!")
-        await interaction.response.send_message(embed=confirm_embed, ephemeral=True)
 
 
 # ==================== UI: ОДОБРИТЬ / ОТКЛОНИТЬ ====================
@@ -191,6 +155,97 @@ class ApproveRejectView(discord.ui.View):
 class PointsCog(commands.Cog, name="Points"):
     def __init__(self, bot):
         self.bot = bot
+        # Словарь для отслеживания ожидания доказательств: user_id -> event info
+        self.pending_evidence = {}
+
+    # --- Слушатель DM для доказательств ---
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        # Игнорируем сообщения ботов и сообщения на сервере
+        if message.author.bot:
+            return
+        if message.guild is not None:
+            return
+
+        # Проверяем, ожидаем ли мы доказательства от этого пользователя
+        if message.author.id not in self.pending_evidence:
+            return
+
+        info = self.pending_evidence.pop(message.author.id)
+        guild_id = info['guild_id']
+
+        # Получаем гильдию
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return
+
+        # Получаем настройки логов
+        settings = await fetch_one(
+            "SELECT * FROM point_settings WHERE guild_id = ?",
+            (guild_id,)
+        )
+        if not settings or not settings['log_channel_id']:
+            try:
+                error_embed = create_error_embed("Ошибка", "Канал логов для отчетов не настроен! Обратитесь к администратору.")
+                await message.author.send(embed=error_embed)
+            except discord.Forbidden:
+                pass
+            return
+
+        log_channel = guild.get_channel(settings['log_channel_id'])
+        if not log_channel:
+            try:
+                error_embed = create_error_embed("Ошибка", "Канал логов не найден! Обратитесь к администратору.")
+                await message.author.send(embed=error_embed)
+            except discord.Forbidden:
+                pass
+            return
+
+        # Формируем embed для логов
+        desc = f"**От:** {message.author.mention}\n"
+        desc += f"**Мероприятие:** {info['event_name']}\n"
+        desc += f"**Очки:** {info['points']}\n"
+
+        if message.content:
+            desc += f"\n**Текст:** {message.content}"
+
+        evidence_embed = create_embed("Новый отчет!", desc, EMBED_PURPLE)
+
+        # Собираем файлы (скриншоты и т.д.)
+        files = []
+        for attachment in message.attachments:
+            try:
+                file = await attachment.to_file()
+                files.append(file)
+            except Exception:
+                pass
+
+        # Добавляем ссылки на вложения в embed если есть
+        if message.attachments:
+            attachment_links = "\n".join([f"[{a.filename}]({a.url})" for a in message.attachments])
+            evidence_embed.add_field(name="Вложения", value=attachment_links, inline=False)
+
+        view = ApproveRejectView(
+            user_id=message.author.id,
+            guild_id=guild_id,
+            event_id=info['event_id'],
+            event_name=info['event_name'],
+            points=info['points']
+        )
+
+        # Отправляем в канал логов
+        if files:
+            await log_channel.send(embed=evidence_embed, view=view, files=files)
+        else:
+            await log_channel.send(embed=evidence_embed, view=view)
+
+        # Подтверждаем пользователю
+        try:
+            confirm_embed = create_success_embed("Отчет отправлен",
+                f"Ваш отчет за **{info['event_name']}** отправлен на проверку модераторам!")
+            await message.author.send(embed=confirm_embed)
+        except discord.Forbidden:
+            pass
 
     points = app_commands.Group(name="points", description="Система баллов и отчетов")
 
