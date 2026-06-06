@@ -26,57 +26,291 @@ async def ensure_ticket_settings(guild_id):
     return settings
 
 
-# ==================== ВЬЮХИ ДЛЯ НАСТРОЕК ====================
+# ==================== МОДАЛ АНКЕТЫ (до 6 вопросов) ====================
 
-class TicketSettingsView(discord.ui.View):
-    def __init__(self, guild_id):
-        super().__init__(timeout=300)
+class ApplicationModal(discord.ui.Modal):
+    def __init__(self, questions, guild_id):
+        # Динамический заголовок
+        super().__init__(title="Подать заявку")
+        self.guild_id = guild_id
+        self.questions = questions
+
+        # Добавляем до 5 TextInput (Discord лимит для модала)
+        for i, q in enumerate(questions[:5]):
+            item = discord.ui.TextInput(
+                label=q[:45],
+                style=discord.TextStyle.paragraph,
+                required=True,
+                max_length=400
+            )
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        settings = await ensure_ticket_settings(self.guild_id)
+
+        category_id = settings['category_id']
+        guild = interaction.guild
+        category = guild.get_channel(category_id) if category_id else None
+
+        # Права доступа к каналу
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True)
+        }
+
+        call_roles = json_to_list(settings['call_roles'])
+        for role_id in call_roles:
+            role = guild.get_role(role_id)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+        # Счётчик тикетов
+        existing_tickets = await fetch_all(
+            "SELECT * FROM tickets WHERE guild_id = ?",
+            (guild.id,)
+        )
+        ticket_num = len(existing_tickets) + 1
+
+        # Создаём канал
+        channel = await guild.create_text_channel(
+            name=f"тикет-{ticket_num}",
+            category=category,
+            overwrites=overwrites
+        )
+
+        await execute_query(
+            "INSERT INTO tickets (channel_id, guild_id, user_id) VALUES (?, ?, ?)",
+            (channel.id, guild.id, interaction.user.id)
+        )
+
+        # ===== ФОРМИРУЕМ EMBED С ОТВЕТАМИ =====
+
+        # Собираем ответы
+        answers = {}
+        for i, child in enumerate(self.children):
+            if isinstance(child, discord.ui.TextInput):
+                answers[child.label] = child.value
+
+        # Предыдущие заявки
+        prev_tickets = await fetch_all(
+            "SELECT * FROM tickets WHERE guild_id = ? AND user_id = ?",
+            (guild.id, interaction.user.id)
+        )
+        # Исключаем текущий (только что созданный)
+        prev_count = len(prev_tickets) - 1  # -1 потому что текущий уже в базе
+
+        # Формируем описание embed
+        desc = ""
+
+        # Предыдущие заявки
+        desc += "**Предыдущие заявки:**\n"
+        if prev_count <= 0:
+            desc += "Заявок не найдено.\n"
+        else:
+            desc += f"Найдено заявок: {prev_count}\n"
+
+        desc += "\n**Заявление**\n"
+
+        # Ответы на вопросы
+        for label, value in answers.items():
+            desc += f"**{label}**\n{value}\n\n"
+
+        # Информация о пользователе
+        desc += f"**Пользователь:** {interaction.user.mention}\n"
+        desc += f"**Username / ID:** {interaction.user.name} / {interaction.user.id}\n"
+        desc += f"**Сервер, в {interaction.created_at.strftime('%H:%M')}**"
+
+        # Создаём embed
+        embed = discord.Embed(
+            title="Ticket to KILLOREZ",
+            description=desc,
+            color=0x2b2d31
+        )
+        # Красная полоса сбоку
+        embed.color = 0xED4245
+        embed.set_footer(text=WATERMARK)
+
+        # Кнопки действий
+        view = TicketActionView(self.guild_id, interaction.user.id)
+
+        await channel.send(embed=embed, view=view)
+
+        # Подтверждение пользователю
+        confirm_embed = create_success_embed("Заявка подана", f"Ваш тикет: {channel.mention}")
+        await interaction.response.send_message(embed=confirm_embed, ephemeral=True)
+
+
+# ==================== КНОПКА ПОДАЧИ ТИКЕТА ====================
+
+class TicketButtonView(discord.ui.View):
+    def __init__(self, bot, guild_id):
+        super().__init__(timeout=None)
+        self.bot = bot
         self.guild_id = guild_id
 
-    @discord.ui.button(label="Роли обзванивающего", style=discord.ButtonStyle.primary, row=0)
-    async def set_call_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = CallRolesModal(self.guild_id)
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="Голосовые каналы", style=discord.ButtonStyle.primary, row=0)
-    async def set_call_channels(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = CallChannelsModal(self.guild_id)
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="Канал логов", style=discord.ButtonStyle.primary, row=1)
-    async def set_log_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = LogChannelModal(self.guild_id)
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="Категория тикетов", style=discord.ButtonStyle.primary, row=1)
-    async def set_category(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = CategoryModal(self.guild_id)
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="Приветствие", style=discord.ButtonStyle.secondary, row=2)
-    async def set_welcome(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Подать заявку", style=discord.ButtonStyle.green, emoji="📩")
+    async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         settings = await ensure_ticket_settings(self.guild_id)
-        modal = WelcomeMessageModal(self.guild_id)
-        modal.message_input.default = settings['welcome_message'] or ""
+
+        questions = json_to_list(settings['questions'])
+        if not questions:
+            embed = create_error_embed("Ошибка", "Вопросы анкеты не настроены! Используйте `/ticket questions`")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Сразу открываем модал с вопросами
+        modal = ApplicationModal(questions, self.guild_id)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="Сообщение обзвона", style=discord.ButtonStyle.secondary, row=2)
-    async def set_call_msg(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+# ==================== ДЕЙСТВИЯ В ТИКЕТЕ ====================
+
+class TicketActionView(discord.ui.View):
+    def __init__(self, guild_id, owner_id):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        self.owner_id = owner_id
+
+    @discord.ui.button(label="Принять", style=discord.ButtonStyle.green, emoji="✅")
+    async def accept_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ticket = await fetch_one("SELECT * FROM tickets WHERE channel_id = ?", (interaction.channel.id,))
+        if not ticket:
+            embed = create_error_embed("Ошибка", "Это не канал тикета!")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        user = interaction.guild.get_member(ticket['user_id'])
+        user_mention = user.mention if user else f"<@{ticket['user_id']}>"
+
+        accept_embed = create_success_embed("Заявка принята",
+            f"Заявка от {user_mention} была **принята** модератором {interaction.user.mention}.")
+        await interaction.response.send_message(embed=accept_embed)
+
+        # Уведомление в ЛС
+        if user:
+            try:
+                dm_embed = create_success_embed("Заявка принята!",
+                    f"Ваша заявка на сервере **{interaction.guild.name}** была принята! Поздравляем!")
+                await user.send(embed=dm_embed)
+            except discord.Forbidden:
+                pass
+
+        # Логируем
+        await self._log_action(interaction, "принята", user)
+
+        # Обновляем сообщение — убираем кнопки
+        try:
+            original = await interaction.channel.fetch_message(interaction.message.id)
+            new_embed = original.embeds[0].copy()
+            new_embed.color = 0x57F287  # Зелёный
+            new_embed.set_footer(text=f"{WATERMARK} | Принята {interaction.user.name}")
+            await original.edit(embed=new_embed, view=None)
+        except Exception:
+            pass
+
+    @discord.ui.button(label="Взять на рассмотрение", style=discord.ButtonStyle.primary, emoji="🔍")
+    async def consider_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ticket = await fetch_one("SELECT * FROM tickets WHERE channel_id = ?", (interaction.channel.id,))
+        if not ticket:
+            embed = create_error_embed("Ошибка", "Это не канал тикета!")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        user = interaction.guild.get_member(ticket['user_id'])
+        user_mention = user.mention if user else f"<@{ticket['user_id']}>"
+
+        consider_embed = create_embed("На рассмотрении",
+            f"Заявка от {user_mention} взята на рассмотрение модератором {interaction.user.mention}.", EMBED_PURPLE)
+        await interaction.response.send_message(embed=consider_embed)
+
+    @discord.ui.button(label="Вызвать на обзвон", style=discord.ButtonStyle.primary, emoji="📞")
+    async def call_user(self, interaction: discord.Interaction, button: discord.ui.Button):
         settings = await ensure_ticket_settings(self.guild_id)
-        modal = CallMessageModal(self.guild_id)
-        modal.message_input.default = settings['call_message'] or ""
-        await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="Вопросы анкеты", style=discord.ButtonStyle.secondary, row=3)
-    async def set_questions(self, interaction: discord.Interaction, button: discord.ui.Button):
+        call_channels = json_to_list(settings['call_channels'])
+        call_msg = settings['call_message'] or "Обзвон начат! Переходите в голосовой канал."
+
+        ticket = await fetch_one("SELECT * FROM tickets WHERE channel_id = ?", (interaction.channel.id,))
+        if not ticket:
+            embed = create_error_embed("Ошибка", "Это не канал тикета!")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        user = interaction.guild.get_member(ticket['user_id'])
+        if not user:
+            embed = create_error_embed("Ошибка", "Пользователь не найден!")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        if not call_channels:
+            embed = create_error_embed("Ошибка", "Голосовые каналы не настроены! Используйте `/ticket call_channels`")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        channel_mentions = " ".join([f"<#{c}>" for c in call_channels])
+        embed = create_embed("Обзвон",
+            f"{call_msg}\n\nГолосовые каналы: {channel_mentions}", EMBED_PURPLE)
+        embed.add_field(name="Участник", value=user.mention, inline=True)
+
+        await interaction.response.send_message(content=user.mention, embed=embed)
+
+    @discord.ui.button(label="Отклонить", style=discord.ButtonStyle.red, emoji="❌")
+    async def reject_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ticket = await fetch_one("SELECT * FROM tickets WHERE channel_id = ?", (interaction.channel.id,))
+        if not ticket:
+            embed = create_error_embed("Ошибка", "Это не канал тикета!")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        user = interaction.guild.get_member(ticket['user_id'])
+        user_mention = user.mention if user else f"<@{ticket['user_id']}>"
+
+        reject_embed = create_embed("Заявка отклонена",
+            f"Заявка от {user_mention} была **отклонена** модератором {interaction.user.mention}.", EMBED_RED)
+        await interaction.response.send_message(embed=reject_embed)
+
+        # Уведомление в ЛС
+        if user:
+            try:
+                dm_embed = create_embed("Заявка отклонена",
+                    f"Ваша заявка на сервере **{interaction.guild.name}** была отклонена.", EMBED_RED)
+                await user.send(embed=dm_embed)
+            except discord.Forbidden:
+                pass
+
+        # Логируем
+        await self._log_action(interaction, "отклонена", user)
+
+        # Обновляем сообщение — убираем кнопки
+        try:
+            original = await interaction.channel.fetch_message(interaction.message.id)
+            new_embed = original.embeds[0].copy()
+            new_embed.color = 0xED4245  # Красный
+            new_embed.set_footer(text=f"{WATERMARK} | Отклонена {interaction.user.name}")
+            await original.edit(embed=new_embed, view=None)
+        except Exception:
+            pass
+
+    async def _log_action(self, interaction, action, user):
+        """Логирование действий в канал логов"""
         settings = await ensure_ticket_settings(self.guild_id)
-        modal = QuestionsModal(self.guild_id)
-        existing = json_to_list(settings['questions'])
-        modal.questions_input.default = "\n".join(existing)
-        await interaction.response.send_modal(modal)
+        if not settings or not settings['log_channel_id']:
+            return
+
+        log_channel = interaction.guild.get_channel(settings['log_channel_id'])
+        if not log_channel:
+            return
+
+        user_mention = user.mention if user else f"<@{self.owner_id}>"
+        log_embed = create_embed(f"Заявка {action}",
+            f"**Канал:** {interaction.channel.mention}\n**Участник:** {user_mention}\n**Модератор:** {interaction.user.mention}",
+            EMBED_GREEN if action == "принята" else EMBED_RED
+        )
+        await log_channel.send(embed=log_embed)
 
 
-# ==================== МОДАЛЫ ====================
+# ==================== МОДАЛЫ НАСТРОЕК ====================
 
 class CallRolesModal(discord.ui.Modal, title="Роли обзванивающего"):
     roles_input = discord.ui.TextInput(
@@ -232,7 +466,7 @@ class QuestionsModal(discord.ui.Modal, title="Вопросы анкеты"):
     questions_input = discord.ui.TextInput(
         label="Вопросы (каждый с новой строки, макс. 5)",
         style=discord.TextStyle.paragraph,
-        placeholder="Ваш вопрос 1\nВаш вопрос 2\nВаш вопрос 3",
+        placeholder="Ваш ник в игре, возраст, имя.\nВаш онлайн в день, сколько часов в игре.\nВ каких фракциях состоял и почему ушел.",
         required=True,
         max_length=500
     )
@@ -248,7 +482,7 @@ class QuestionsModal(discord.ui.Modal, title="Вопросы анкеты"):
             embed = create_error_embed("Ошибка", "Введите хотя бы один вопрос!")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        questions = questions[:5]  # Максимум 5 вопросов
+        questions = questions[:5]
         await execute_query(
             "UPDATE ticket_settings SET questions = ? WHERE guild_id = ?",
             (list_to_json(questions), self.guild_id)
@@ -258,223 +492,54 @@ class QuestionsModal(discord.ui.Modal, title="Вопросы анкеты"):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# ==================== ТИКЕТ — СОЗДАНИЕ КАНАЛА ====================
+# ==================== ПАНЕЛЬ НАСТРОЕК С КНОПКАМИ ====================
 
-class TicketButtonView(discord.ui.View):
-    def __init__(self, bot, guild_id):
-        super().__init__(timeout=None)
-        self.bot = bot
+class TicketSettingsView(discord.ui.View):
+    def __init__(self, guild_id):
+        super().__init__(timeout=300)
         self.guild_id = guild_id
 
-    @discord.ui.button(label="Подать тикет", style=discord.ButtonStyle.green, emoji="📩")
-    async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        settings = await ensure_ticket_settings(self.guild_id)
-
-        questions = json_to_list(settings['questions'])
-        category_id = settings['category_id']
-
-        guild = interaction.guild
-        category = guild.get_channel(category_id) if category_id else None
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True)
-        }
-
-        call_roles = json_to_list(settings['call_roles'])
-        for role_id in call_roles:
-            role = guild.get_role(role_id)
-            if role:
-                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-        # Счётчик тикетов для уникального имени
-        existing_tickets = await fetch_all(
-            "SELECT * FROM tickets WHERE guild_id = ?",
-            (guild.id,)
-        )
-        ticket_num = len(existing_tickets) + 1
-
-        channel = await guild.create_text_channel(
-            name=f"тикет-{ticket_num}",
-            category=category,
-            overwrites=overwrites
-        )
-
-        await execute_query(
-            "INSERT INTO tickets (channel_id, guild_id, user_id) VALUES (?, ?, ?)",
-            (channel.id, guild.id, interaction.user.id)
-        )
-
-        welcome_msg = settings['welcome_message'] or "Добро пожаловать в тикет! Опишите вашу проблему, и мы поможем вам в ближайшее время."
-        embed = create_embed("Тикет создан", welcome_msg, EMBED_GREEN)
-        embed.add_field(name="Участник", value=interaction.user.mention, inline=True)
-
-        view = TicketActionView(self.bot, guild.id, interaction.user.id, questions)
-        await channel.send(embed=embed, view=view)
-
-        confirm_embed = create_success_embed("Тикет создан", f"Ваш тикет: {channel.mention}")
-        await interaction.response.send_message(embed=confirm_embed, ephemeral=True)
-
-
-# ==================== ДЕЙСТВИЯ В ТИКЕТЕ ====================
-
-class TicketActionView(discord.ui.View):
-    def __init__(self, bot, guild_id, owner_id, questions):
-        super().__init__(timeout=None)
-        self.bot = bot
-        self.guild_id = guild_id
-        self.owner_id = owner_id
-        self.questions = questions
-
-    @discord.ui.button(label="Закрыть тикет", style=discord.ButtonStyle.red, emoji="🔒")
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Подтверждение закрытия
-        embed = create_embed("Закрытие тикета",
-            f"Вы уверены что хотите закрыть тикет? Нажмите кнопку ниже для подтверждения.",
-            EMBED_RED)
-        view = ConfirmCloseView(self.guild_id)
-        await interaction.response.send_message(embed=embed, view=view)
-
-    @discord.ui.button(label="Обзвон", style=discord.ButtonStyle.primary, emoji="📞")
-    async def call_user(self, interaction: discord.Interaction, button: discord.ui.Button):
-        settings = await ensure_ticket_settings(self.guild_id)
-
-        call_channels = json_to_list(settings['call_channels'])
-        call_msg = settings['call_message'] or "Обзвон начат!"
-
-        if not call_channels:
-            embed = create_error_embed("Ошибка", "Голосовые каналы не настроены! Используйте `/ticket call_channels`")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        channel_mentions = " ".join([f"<#{c}>" for c in call_channels])
-        embed = create_embed("Обзвон", f"{call_msg}\n\nГолосовые каналы: {channel_mentions}", EMBED_PURPLE)
-
-        # Упомянуть владельца тикета
-        ticket = await fetch_one("SELECT * FROM tickets WHERE channel_id = ?", (interaction.channel.id,))
-        if ticket:
-            user = interaction.guild.get_member(ticket['user_id'])
-            if user:
-                embed.add_field(name="Участник", value=user.mention, inline=True)
-
-        await interaction.response.send_message(content=f"<@{ticket['user_id']}>" if ticket else None, embed=embed)
-
-    @discord.ui.button(label="Анкета", style=discord.ButtonStyle.secondary, emoji="📝")
-    async def fill_form(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.questions:
-            embed = create_error_embed("Ошибка", "Вопросы не настроены! Используйте `/ticket questions`")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        modal = TicketFormModal(self.questions)
+    @discord.ui.button(label="Роли обзванивающего", style=discord.ButtonStyle.primary, row=0)
+    async def set_call_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = CallRolesModal(self.guild_id)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="Добавить участника", style=discord.ButtonStyle.success, emoji="➕")
-    async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = AddUserModal(self.guild_id)
+    @discord.ui.button(label="Голосовые каналы", style=discord.ButtonStyle.primary, row=0)
+    async def set_call_channels(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = CallChannelsModal(self.guild_id)
         await interaction.response.send_modal(modal)
 
+    @discord.ui.button(label="Канал логов", style=discord.ButtonStyle.primary, row=1)
+    async def set_log_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = LogChannelModal(self.guild_id)
+        await interaction.response.send_modal(modal)
 
-class ConfirmCloseView(discord.ui.View):
-    def __init__(self, guild_id):
-        super().__init__(timeout=60)
-        self.guild_id = guild_id
+    @discord.ui.button(label="Категория тикетов", style=discord.ButtonStyle.primary, row=1)
+    async def set_category(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = CategoryModal(self.guild_id)
+        await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="Подтвердить закрытие", style=discord.ButtonStyle.danger, emoji="✅")
-    async def confirm_close(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Приветствие", style=discord.ButtonStyle.secondary, row=2)
+    async def set_welcome(self, interaction: discord.Interaction, button: discord.ui.Button):
         settings = await ensure_ticket_settings(self.guild_id)
+        modal = WelcomeMessageModal(self.guild_id)
+        modal.message_input.default = settings['welcome_message'] or ""
+        await interaction.response.send_modal(modal)
 
-        # Собрать логи сообщений из канала
-        messages = []
-        async for msg in interaction.channel.history(limit=100, oldest_first=True):
-            if msg.author.bot:
-                continue
-            messages.append(f"[{msg.created_at.strftime('%H:%M')}] {msg.author.name}: {msg.content}")
+    @discord.ui.button(label="Сообщение обзвона", style=discord.ButtonStyle.secondary, row=2)
+    async def set_call_msg(self, interaction: discord.Interaction, button: discord.ui.Button):
+        settings = await ensure_ticket_settings(self.guild_id)
+        modal = CallMessageModal(self.guild_id)
+        modal.message_input.default = settings['call_message'] or ""
+        await interaction.response.send_modal(modal)
 
-        log_text = "\n".join(messages[-50:]) if messages else "Нет сообщений"
-
-        if settings and settings['log_channel_id']:
-            log_channel = interaction.guild.get_channel(settings['log_channel_id'])
-            if log_channel:
-                ticket = await fetch_one("SELECT * FROM tickets WHERE channel_id = ?", (interaction.channel.id,))
-                owner_mention = f"<@{ticket['user_id']}>" if ticket else "Неизвестен"
-
-                log_embed = create_embed("Тикет закрыт",
-                    f"**Канал:** {interaction.channel.name}\n**Закрыл:** {interaction.user.mention}\n**Владелец:** {owner_mention}",
-                    EMBED_RED)
-
-                # Отправить лог как файл если длинный
-                if len(log_text) > 1024:
-                    log_embed.add_field(name="Сообщения", value="См. прикрепленный файл", inline=False)
-                    import io
-                    file = discord.File(io.BytesIO(log_text.encode('utf-8')), filename=f"ticket-{interaction.channel.name}.txt")
-                    await log_channel.send(embed=log_embed, file=file)
-                else:
-                    log_embed.add_field(name="Сообщения", value=log_text[:1024] or "Нет", inline=False)
-                    await log_channel.send(embed=log_embed)
-
-        await execute_query("DELETE FROM tickets WHERE channel_id = ?", (interaction.channel.id,))
-
-        closing_embed = create_embed("Тикет закрывается...",
-            f"Тикет закрыт пользователем {interaction.user.mention}. Канал будет удален через 5 секунд.",
-            EMBED_RED)
-        await interaction.response.edit_message(embed=closing_embed, view=None)
-
-        import asyncio
-        await asyncio.sleep(5)
-        await interaction.channel.delete()
-
-
-class AddUserModal(discord.ui.Modal, title="Добавить участника в тикет"):
-    user_input = discord.ui.TextInput(
-        label="ID участника",
-        placeholder="123456789",
-        required=True
-    )
-
-    def __init__(self, guild_id):
-        super().__init__()
-        self.guild_id = guild_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not self.user_input.value.strip().isdigit():
-            embed = create_error_embed("Ошибка", "Введите корректный ID участника!")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        user_id = int(self.user_input.value.strip())
-        member = interaction.guild.get_member(user_id)
-        if not member:
-            embed = create_error_embed("Ошибка", "Участник не найден на сервере!")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        await interaction.channel.set_permissions(member, view_channel=True, send_messages=True, read_message_history=True)
-
-        embed = create_success_embed("Участник добавлен", f"{member.mention} добавлен в тикет!")
-        await interaction.response.send_message(embed=embed)
-
-
-class TicketFormModal(discord.ui.Modal, title="Анкета"):
-    def __init__(self, questions):
-        super().__init__()
-        self.answers = []
-        for i, q in enumerate(questions[:5]):
-            item = discord.ui.TextInput(label=q[:45], style=discord.TextStyle.paragraph, required=True)
-            self.add_item(item)
-        self.questions = questions
-
-    async def on_submit(self, interaction: discord.Interaction):
-        answers = []
-        for child in self.children:
-            if isinstance(child, discord.ui.TextInput):
-                answers.append(f"**{child.label}:** {child.value}")
-
-        desc = "\n".join(answers)
-        embed = create_embed("Ответы на анкету", desc, EMBED_PURPLE)
-        embed.add_field(name="Участник", value=interaction.user.mention, inline=True)
-        await interaction.response.send_message(embed=embed)
+    @discord.ui.button(label="Вопросы анкеты", style=discord.ButtonStyle.secondary, row=3)
+    async def set_questions(self, interaction: discord.Interaction, button: discord.ui.Button):
+        settings = await ensure_ticket_settings(self.guild_id)
+        modal = QuestionsModal(self.guild_id)
+        existing = json_to_list(settings['questions'])
+        modal.questions_input.default = "\n".join(existing)
+        await interaction.response.send_modal(modal)
 
 
 # ==================== КОГ ====================
@@ -592,7 +657,7 @@ class TicketCog(commands.Cog, name="Ticket"):
             "UPDATE ticket_settings SET welcome_message = ? WHERE guild_id = ?",
             (message, interaction.guild.id)
         )
-        embed = create_success_embed("Успешно", f"Приветственное сообщение обновлено!")
+        embed = create_success_embed("Успешно", "Приветственное сообщение обновлено!")
         await interaction.response.send_message(embed=embed)
 
     @ticket.command(name="call_message", description="Изменить сообщение обзвона")
@@ -656,7 +721,7 @@ class TicketCog(commands.Cog, name="Ticket"):
         view = TicketSettingsView(interaction.guild.id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @ticket.command(name="create", description="Создать кнопку для подачи тикета")
+    @ticket.command(name="create", description="Создать кнопку для подачи заявки")
     async def ticket_create(self, interaction: discord.Interaction):
         settings = await ensure_ticket_settings(interaction.guild.id)
 
@@ -665,9 +730,15 @@ class TicketCog(commands.Cog, name="Ticket"):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
+        questions = json_to_list(settings['questions'])
+        if not questions:
+            embed = create_error_embed("Ошибка", "Сначала настройте вопросы анкеты! Используйте `/ticket questions`")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
         embed = create_embed(
-            "Подать тикет",
-            "Нажмите кнопку ниже, чтобы подать тикет. Вам будет создан личный канал, где вы сможете задать свой вопрос.",
+            "Подать заявку",
+            "Нажмите кнопку ниже, чтобы подать заявку. Вам будет предложено заполнить анкету, после чего будет создан личный канал с вашей заявкой.",
             EMBED_GREEN
         )
         view = TicketButtonView(self.bot, interaction.guild.id)
