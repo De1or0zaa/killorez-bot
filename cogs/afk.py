@@ -91,7 +91,7 @@ class AFKCog(commands.Cog, name="AFK"):
                 return
 
         await execute_query(
-            "INSERT OR REPLACE INTO afk (user_id, guild_id, reason, time_from, time_to, is_afk) VALUES (?, ?, ?, ?, ?, 1)",
+            "INSERT INTO afk (user_id, guild_id, reason, time_from, time_to, is_afk) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT (user_id, guild_id) DO UPDATE SET reason = EXCLUDED.reason, time_from = EXCLUDED.time_from, time_to = EXCLUDED.time_to, is_afk = 1",
             (interaction.user.id, interaction.guild.id, reason, time_from, time_to)
         )
 
@@ -281,7 +281,7 @@ class InactiveCog(commands.Cog, name="Inactive"):
             return
 
         await execute_query(
-            "INSERT OR REPLACE INTO inactive (user_id, guild_id, reason, time_from, time_to, is_inactive) VALUES (?, ?, ?, ?, ?, 1)",
+            "INSERT INTO inactive (user_id, guild_id, reason, time_from, time_to, is_inactive) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT (user_id, guild_id) DO UPDATE SET reason = EXCLUDED.reason, time_from = EXCLUDED.time_from, time_to = EXCLUDED.time_to, is_inactive = 1",
             (interaction.user.id, interaction.guild.id, reason, time_from, time_to)
         )
 

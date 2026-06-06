@@ -53,7 +53,7 @@ class CarCog(commands.Cog, name="Car"):
     @app_commands.describe(reset_time="Время сброса в секундах")
     async def car_settings(self, interaction: discord.Interaction, reset_time: int):
         await execute_query(
-            "INSERT OR REPLACE INTO car_settings (guild_id, reset_time) VALUES (?, ?)",
+            "INSERT INTO car_settings (guild_id, reset_time) VALUES (?, ?) ON CONFLICT (guild_id) DO UPDATE SET reset_time = EXCLUDED.reset_time",
             (interaction.guild.id, reset_time)
         )
         hours = reset_time // 3600
