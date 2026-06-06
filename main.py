@@ -14,9 +14,6 @@ intents.reactions = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Pending evidence storage for points system
-bot.pending_evidence = {}
-
 
 @bot.event
 async def on_ready():
