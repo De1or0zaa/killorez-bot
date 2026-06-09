@@ -443,7 +443,7 @@ class PanelQuestionsModal(discord.ui.Modal, title="Вопросы анкеты")
     questions_input = discord.ui.TextInput(
         label="Вопросы (каждый с новой строки, макс. 5)",
         style=discord.TextStyle.paragraph,
-        placeholder="Ваш ник в игре, возраст, имя.\nВаш онлайн в день, сколько часов в игре.\nВ каких фракциях состоял и почему ушел.",
+        placeholder="Введите вопросы анкеты (по одному на строку)",
         required=True,
         max_length=500
     )
