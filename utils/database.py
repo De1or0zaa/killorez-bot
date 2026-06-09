@@ -93,15 +93,42 @@ async def init_db():
             )
         ''')
 
+        # Ticket panels (мульти-панели анкет)
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS ticket_panels (
+                panel_id SERIAL PRIMARY KEY,
+                guild_id BIGINT,
+                name TEXT DEFAULT 'Тикет',
+                description TEXT DEFAULT '',
+                button_label TEXT DEFAULT 'Подать заявку',
+                button_emoji TEXT DEFAULT '📩',
+                welcome_message TEXT DEFAULT 'Добро пожаловать в тикет!',
+                call_message TEXT DEFAULT 'Обзвон начат!',
+                questions TEXT DEFAULT '[]',
+                call_roles TEXT DEFAULT '[]',
+                call_channels TEXT DEFAULT '[]',
+                admin_roles TEXT DEFAULT '[]',
+                log_channel_id BIGINT DEFAULT NULL,
+                category_id BIGINT DEFAULT NULL
+            )
+        ''')
+
         # Active tickets
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS tickets (
                 channel_id BIGINT PRIMARY KEY,
                 guild_id BIGINT,
                 user_id BIGINT,
+                panel_id INTEGER DEFAULT NULL,
                 answers TEXT DEFAULT '[]'
             )
         ''')
+
+        # Миграция: добавляем колонку panel_id если её нет
+        try:
+            await conn.execute('ALTER TABLE tickets ADD COLUMN IF NOT EXISTS panel_id INTEGER DEFAULT NULL')
+        except Exception:
+            pass
 
         # Car system
         await conn.execute('''
@@ -231,6 +258,7 @@ def _get_serial_column(insert_query):
         'warnings': 'warning_id',
         'market_products': 'product_id',
         'point_events': 'event_id',
+        'ticket_panels': 'panel_id',
     }
     query_upper = insert_query.upper()
     for table, col in serial_map.items():
