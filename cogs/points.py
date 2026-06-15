@@ -49,28 +49,16 @@ class EventSelect(discord.ui.Select):
         self.guild_id = guild_id
 
     async def callback(self, interaction: discord.Interaction):
-        # DEBUG: сообщаем о начале
-        await interaction.response.send_message(
-            embed=create_embed("DEBUG", f"1️⃣ callback started\nuser={interaction.user.id}\nguild={interaction.guild_id}\nvalues={self.values}", EMBED_PURPLE),
-            ephemeral=True
-        )
-        
         event_id = int(self.values[0])
         event = await fetch_one(
             "SELECT * FROM point_events WHERE event_id = ?",
             (event_id,)
         )
         if not event:
-            await interaction.followup.send(
-                embed=create_error_embed("DEBUG", f"2️⃣ event {event_id} NOT FOUND"),
-                ephemeral=True
-            )
+            log.warning(f"[POINTS] Мероприятие {event_id} не найдено")
+            embed = create_error_embed("Ошибка", "Мероприятие не найдено!")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-
-        await interaction.followup.send(
-            embed=create_embed("DEBUG", f"2️⃣ event found: {event['name']}\npoints={event['points']}", EMBED_PURPLE),
-            ephemeral=True
-        )
 
         # Сохраняем информацию о ожидании доказательств
         cog = interaction.client.get_cog('Points')
@@ -83,42 +71,25 @@ class EventSelect(discord.ui.Select):
                 'guild_id': self.guild_id,
                 'source': 'dm'
             }
-
-        await interaction.followup.send(
-            embed=create_embed("DEBUG", f"3️⃣ pending_evidence saved\nuser={interaction.user.id}", EMBED_PURPLE),
-            ephemeral=True
-        )
+            log.info(f"[POINTS] pending_evidence сохранено: user={interaction.user.id}, event={event['name']}")
 
         # Отправляем DM с просьбой прислать доказательства
         try:
-            await interaction.followup.send(
-                embed=create_embed("DEBUG", f"4️⃣ Attempting DM send to {interaction.user.id}", EMBED_PURPLE),
-                ephemeral=True
-            )
-            
+            log.info(f"[POINTS] Пытаюсь отправить DM user={interaction.user.id}")
             dm_embed = create_embed("Доказательства",
                 f"Вы выбрали мероприятие: **{event['name']}** ({event['points']} очков)\n\n"
                 f"Пожалуйста, **ответьте на это сообщение** с доказательствами вашего участия!\n\n"
                 f"Вы можете прикрепить скриншоты, видео или написать текст.",
                 EMBED_PURPLE)
             dm_embed.set_footer(text=WATERMARK)
-            
             await interaction.user.send(embed=dm_embed)
-            
-            await interaction.followup.send(
-                embed=create_success_embed("DEBUG", f"5️⃣ DM SENT successfully to {interaction.user.id}"),
-                ephemeral=True
-            )
+            log.info(f"[POINTS] DM успешно отправлен user={interaction.user.id}")
 
             confirm_embed = create_success_embed("Проверьте ЛС",
                 f"Я отправил вам сообщение в ЛС! Ответьте на него с доказательствами участия в **{event['name']}**.")
-            await interaction.followup.send(embed=confirm_embed, ephemeral=True)
-            
+            await interaction.response.send_message(embed=confirm_embed, ephemeral=True)
         except discord.Forbidden as e:
-            await interaction.followup.send(
-                embed=create_error_embed("DEBUG", f"❌ DM Forbidden!\nuser={interaction.user.id}\nerror={e}"),
-                ephemeral=True
-            )
+            log.warning(f"[POINTS] DM Forbidden для user {interaction.user.id}: {e}")
             if cog and interaction.user.id in cog.pending_evidence:
                 cog.pending_evidence[interaction.user.id]['source'] = 'fallback'
                 cog.pending_evidence[interaction.user.id]['fallback_step'] = 'waiting_text'
@@ -129,23 +100,19 @@ class EventSelect(discord.ui.Select):
                 "• В настройках сервера или приватности Discord запрещены ЛС от участников сервера\n\n"
                 "Вы можете отправить доказательства прямо здесь, нажав кнопку ниже.")
             view = EvidenceFallbackView()
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-            
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         except discord.HTTPException as e:
-            await interaction.followup.send(
-                embed=create_error_embed("DEBUG", f"❌ HTTPException!\nuser={interaction.user.id}\nerror={e}"),
-                ephemeral=True
-            )
+            log.error(f"[POINTS] HTTPException при отправке DM user={interaction.user.id}: {e}")
             if cog and interaction.user.id in cog.pending_evidence:
                 del cog.pending_evidence[interaction.user.id]
             embed = create_error_embed("Ошибка", f"Не удалось отправить сообщение: {e}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(
-                embed=create_error_embed("DEBUG", f"❌ UNKNOWN ERROR!\nuser={interaction.user.id}\nerror={type(e).__name__}: {e}"),
-                ephemeral=True
-            )
+            log.error(f"[POINTS] Неизвестная ошибка для user={interaction.user.id}: {type(e).__name__}: {e}")
+            if cog and interaction.user.id in cog.pending_evidence:
+                del cog.pending_evidence[interaction.user.id]
+            embed = create_error_embed("Ошибка", "Произошла неизвестная ошибка. Попробуйте ещё раз.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # ==================== UI: FAllBACK ДОКАЗАТЕЛЬСТВА НА СЕРВЕРЕ ====================
