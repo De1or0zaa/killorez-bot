@@ -11,6 +11,8 @@ intents.message_content = True
 intents.members = True
 intents.voice_states = True
 intents.reactions = True
+intents.direct_messages = True
+intents.messages = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
